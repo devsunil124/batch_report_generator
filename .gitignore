@@ -1,0 +1,12 @@
+# Ignore data files
+*.ndax
+*.xlsx
+*.csv
+
+# Ignore output directories
+Graphs/
+__pycache__/
+
+# System files
+.DS_Store
+Thumbs.db
