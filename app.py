@@ -382,6 +382,41 @@ with t_sum:
     comp_label = f"  —  comparing with **{secondary_name}**" if secondary_file else ""
     st.markdown(f"### Cell: `{primary_name}`{comp_label}")
 
+    try:
+        start_date = df_prim['Timestamp'].min().strftime("%B %d, %Y")
+    except:
+        start_date = "Unknown"
+
+    meta_html = ""
+    meta_path = os.path.join(folder_path, "cell_metadata.csv") if 'folder_path' in locals() and folder_path else "cell_metadata.csv"
+    if os.path.exists(meta_path):
+        try:
+            meta_df = pd.read_csv(meta_path)
+            meta_row = meta_df[meta_df['Cell Name'].astype(str).str.strip().str.lower() == primary_name.lower()]
+            if not meta_row.empty:
+                cfg = str(meta_row.iloc[0]['Configuration & Changes']).strip()
+                nts = str(meta_row.iloc[0]['Experimental Notes / Reason to Stop']).strip()
+                if cfg.lower() == 'nan': cfg = "No configuration data"
+                if nts.lower() == 'nan': nts = "No notes provided"
+                meta_html = f'''
+                <div style="background-color:rgba(59,130,246,0.08); border-left:4px solid #3B82F6; padding:12px 16px; border-radius:4px; margin-bottom:20px;">
+                    <div style="font-size:0.95em; margin-bottom:6px;"><span style="color:#93C5FD;">📅 Started Cycling:</span> <span style="color:#F1F5F9; font-weight:600;">{start_date}</span></div>
+                    <div style="font-size:0.9em; margin-bottom:4px;"><span style="color:#94A3B8;">⚙️ Configuration:</span> <span style="color:#E2E8F0;">{cfg}</span></div>
+                    <div style="font-size:0.9em;"><span style="color:#94A3B8;">📝 Notes / Status:</span> <span style="color:#E2E8F0;">{nts}</span></div>
+                </div>
+                '''
+        except Exception as e:
+            pass
+
+    if not meta_html:
+        meta_html = f'''
+        <div style="background-color:rgba(59,130,246,0.08); border-left:4px solid #3B82F6; padding:10px 16px; border-radius:4px; margin-bottom:20px;">
+            <div style="font-size:0.95em;"><span style="color:#93C5FD;">📅 Started Cycling:</span> <span style="color:#F1F5F9; font-weight:600;">{start_date}</span></div>
+        </div>
+        '''
+    
+    st.markdown(meta_html, unsafe_allow_html=True)
+
     if rp.empty:
         st.warning("No data in this cycle range.")
     else:
