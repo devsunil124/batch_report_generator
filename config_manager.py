@@ -31,3 +31,4 @@ def save_config(path):
     """
     with open(CONFIG_FILE, 'w') as f:
         json.dump({"folder_path": path}, f)
+

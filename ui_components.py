@@ -191,7 +191,7 @@ def render_sidebar(saved_path):
         all_names = [os.path.basename(os.path.splitext(f)[0]) for f in all_files]
         
         if not all_files:
-            st.warning(f"No .ndax files found in {folder_path}")
+            st.warning("No .ndax files found in {0}".format(folder_path))
             st.stop()
 
         st.markdown('<hr class="my-divider">', unsafe_allow_html=True)
@@ -206,7 +206,7 @@ def render_sidebar(saved_path):
         primary_name = st.selectbox("Cell", filtered, label_visibility="collapsed")
         primary_file = os.path.join(folder_path, primary_name + ".ndax")
         sz = file_size_mb(primary_file)
-        st.caption(f"📦 {sz:.1f} MB {'— large file, please wait' if sz > 10 else ''}")
+        st.caption("📦 {0:.1f} MB {1}".format(sz, "— large file, please wait" if sz > 10 else ""))
 
         st.markdown('<hr class="my-divider">', unsafe_allow_html=True)
 
@@ -216,7 +216,7 @@ def render_sidebar(saved_path):
         
         secondary_file = os.path.join(folder_path, secondary_name + ".ndax") if secondary_name != "— None —" else None
         if secondary_file:
-            st.caption(f"📦 {file_size_mb(secondary_file):.1f} MB")
+            st.caption("📦 {0:.1f} MB".format(file_size_mb(secondary_file)))
 
         st.markdown('<hr class="my-divider">', unsafe_allow_html=True)
         st.markdown('<div class="sid-head">🔍 Cycle Range</div>', unsafe_allow_html=True)

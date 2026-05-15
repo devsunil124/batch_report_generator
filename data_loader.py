@@ -1,38 +1,35 @@
-import streamlit as st
 import pandas as pd
 import NewareNDA
 import os
 import plotly.graph_objects as go
 import plotly.express as px
+import logging
+from joblib import Memory
 
-@st.cache_data(show_spinner=False)
-def load_and_analyze(file_path):
+# Initialize joblib persistent cache
+memory = Memory("./cache", verbose=0)
+
+@memory.cache(ignore=['progress_callback'])
+def _load_and_analyze_cached(file_path, mtime, progress_callback=None):
     """
-    Load an NDAX file using NewareNDA and extract step-level metrics into a summary DataFrame.
-
-    Parameters
-    ----------
-    file_path : str
-        The absolute or relative path to the .ndax file.
-
-    Returns
-    -------
-    df : pandas.DataFrame or None
-        The raw dataframe extracted directly from NewareNDA.
-    report_df : pandas.DataFrame or None
-        A summarized report containing cycle-by-cycle metrics. 
-        Returns (None, None) if loading fails.
+    Internal cached function to process the NDAX file.
+    The mtime parameter ensures the cache is invalidated if the file is modified.
     """
     try:
         df = NewareNDA.read(file_path)
         report_data = []
         cycles = sorted(df['Cycle'].unique())
         if 0 in cycles: cycles.remove(0)
+        total_cycles = len(cycles)
 
-        for cycle in cycles:
+        for i, cycle in enumerate(cycles):
+            # Report progress
+            if progress_callback:
+                progress_callback(i, total_cycles)
+                
             cyc_df = df[df['Cycle'] == cycle]
             if cyc_df.empty: continue
-            chg_df  = cyc_df[cyc_df['Status'] == 'CC_Chg']
+            chg_df  = cyc_df[cyc_df['Status'].isin(['CC_Chg', 'CCCV_Chg', 'CV_Chg'])]
             dchg_df = cyc_df[cyc_df['Status'].isin(['CC_DChg', 'CCCV_DChg'])]
 
             time_hrs = 0
@@ -82,10 +79,49 @@ def load_and_analyze(file_path):
                 'OCV after Chg':  round(ocv_c, 4) if ocv_c  else None,
                 'OCV after DChg': round(ocv_d, 4) if ocv_d else None,
             })
+            
+        if progress_callback:
+            progress_callback(total_cycles, total_cycles)
+            
         return df, pd.DataFrame(report_data)
     except Exception as e:
-        st.error(f"❌ Error loading {os.path.basename(file_path)}: {e}")
+        logging.error("Error loading {0}: {1}".format(os.path.basename(file_path), e))
         return None, None
+
+def load_and_analyze(file_path, progress_callback=None):
+    """
+    Load an NDAX file, utilizing joblib to cache parsed data to disk.
+
+    Parameters
+    ----------
+    file_path : str
+        The absolute or relative path to the .ndax file.
+    progress_callback : callable, optional
+        A function to report progress: callback(current, total).
+
+    Returns
+    -------
+    df : pandas.DataFrame or None
+    report_df : pandas.DataFrame or None
+    is_cached : bool
+        True if the data was loaded from cache, False if newly processed.
+    """
+    if not file_path or not os.path.exists(file_path):
+        return None, None, False
+        
+    mtime = os.path.getmtime(file_path)
+    
+    # Check if this call will be a cache hit
+    is_cached = _load_and_analyze_cached.check_call_in_cache(file_path, mtime)
+    
+    df, report_df = _load_and_analyze_cached(file_path, mtime, progress_callback=progress_callback)
+    
+    if is_cached and progress_callback:
+        # If it was a cache hit, the function bypassed execution. 
+        # Force the progress bar to complete immediately.
+        progress_callback(1, 1)
+        
+    return df, report_df, is_cached
 
 def build_vc_traces(df_raw, cycle_list, colorscale, label_suffix="", single_color=None):
     """
@@ -117,20 +153,20 @@ def build_vc_traces(df_raw, cycle_list, colorscale, label_suffix="", single_colo
     traces = []
     for idx, cyc in enumerate(cycle_list):
         cyc_df = df_raw[df_raw['Cycle'] == cyc]
-        chg  = cyc_df[cyc_df['Status'] == 'CC_Chg']
+        chg  = cyc_df[cyc_df['Status'].isin(['CC_Chg', 'CCCV_Chg', 'CV_Chg'])]
         dchg = cyc_df[cyc_df['Status'].isin(['CC_DChg', 'CCCV_DChg'])]
         col  = colors[idx]
-        name = f"Cyc {cyc}{label_suffix}"
+        name = "Cyc {0}{1}".format(cyc, label_suffix)
         
         is_first = (idx == 0)
-        leg_group = f"All{label_suffix}" if single_color else f"g{cyc}{label_suffix}"
+        leg_group = "All{0}".format(label_suffix) if single_color else "g{0}{1}".format(cyc, label_suffix)
         show_leg = is_first if single_color else True
 
         if not chg.empty:
             traces.append(go.Scatter(
                 x=chg['Charge_Capacity(mAh)'], y=chg['Voltage'],
                 mode='lines', line=dict(color=col, width=1.5),
-                name=f"All Cycles{label_suffix}" if (single_color and is_first) else name + " ↑", 
+                name="All Cycles{0}".format(label_suffix) if (single_color and is_first) else name + " ↑", 
                 legendgroup=leg_group, showlegend=show_leg,
                 hovertemplate=name + " ↑<br>Cap: %{x:.2f}<br>V: %{y:.3f}<extra></extra>"
             ))

@@ -26,12 +26,12 @@ folder_path, primary_name, primary_file, secondary_name, secondary_file, range_p
 
 # ─── LOAD DATA ───────────────────────────────────────────────────────────────
 prog = st.progress(0, text=f"⏳ Loading {primary_name}…")
-df_prim, report_prim = load_and_analyze(primary_file)
+df_prim, report_prim, _ = load_and_analyze(primary_file)
 prog.progress(55, text=f"Loaded {primary_name}. Analyzing…")
 
 df_sec, report_sec = None, None
 if secondary_file:
-    df_sec, report_sec = load_and_analyze(secondary_file)
+    df_sec, report_sec, _ = load_and_analyze(secondary_file)
 prog.progress(100, text="✅ Ready!")
 time.sleep(0.35); prog.empty()
 

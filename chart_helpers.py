@@ -27,7 +27,7 @@ def chart_layout(xtitle, ytitle):
         plot_bgcolor='rgba(0,0,0,0)', 
         paper_bgcolor='rgba(0,0,0,0)',
         margin=dict(l=10, r=10, t=30, b=20),
-        hovermode="x unified",
+        hovermode=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         font=dict(family="Inter, sans-serif", size=12),
     )
