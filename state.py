@@ -1,27 +1,23 @@
-"""Shared application state for the ZnBr terminal dashboard.
+"""Per-analysis state: which cell, optional compare cell, range filter.
 
-This is a single-user local dashboard, so module-level state is fine.
+Backed by the library — pulls dataframes via load_and_analyze on demand.
+Joblib caches make repeat loads instant; the library's catalog gives O(1)
+metadata for the home page so the user never waits on a full parse just to
+see what they have.
 """
-import os
-import glob
-import re
-import pandas as pd
+from __future__ import annotations
+from typing import Optional
 
-from config_manager import load_config, save_config
 from data_loader import load_and_analyze
+from library import library
 
 
-def _natural_key(s: str):
-    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', s)]
-
-
-class AppState:
-    """Holds the user's current selection and loaded dataframes."""
+class AnalysisState:
+    """One instance lives in memory; the analysis page reads it."""
 
     def __init__(self) -> None:
-        self.folder_path: str = load_config() or ""
-        self.primary_name: str | None = None
-        self.secondary_name: str | None = None
+        self.primary_name: Optional[str] = None
+        self.secondary_name: Optional[str] = None
 
         self.df_prim = None
         self.report_prim = None
@@ -33,80 +29,40 @@ class AppState:
         self.cycle_start: int = 0
         self.cycle_end: int = 0
 
-        self._listeners: list = []
+        self.theme: str = "light"  # 'light' | 'dark' — mirrored from browser
 
-    # ── observers ────────────────────────────────────────────────────────────
-    def subscribe(self, fn) -> None:
-        if fn not in self._listeners:
-            self._listeners.append(fn)
-
-    def _notify(self) -> None:
-        for fn in list(self._listeners):
-            try:
-                fn()
-            except Exception as e:
-                print(f"[state] listener error: {e}")
-
-    # ── folder ───────────────────────────────────────────────────────────────
-    def set_folder(self, path: str) -> None:
-        path = (path or "").strip()
-        if path and os.path.isdir(path):
-            self.folder_path = path
-            save_config(path)
-            # Reset selection because file list changed
-            self.primary_name = None
-            self.secondary_name = None
-            self.df_prim = self.report_prim = None
-            self.df_sec = self.report_sec = None
-            self._notify()
-
-    def folder_valid(self) -> bool:
-        return bool(self.folder_path) and os.path.isdir(self.folder_path)
-
-    def list_cells(self) -> list[str]:
-        if not self.folder_valid():
-            return []
-        files = sorted(
-            glob.glob(os.path.join(self.folder_path, "*.ndax")),
-            key=_natural_key,
-        )
-        return [os.path.basename(os.path.splitext(f)[0]) for f in files]
-
-    def file_for(self, name: str) -> str:
-        return os.path.join(self.folder_path, f"{name}.ndax")
-
-    def file_size_mb(self, name: str) -> float:
-        try:
-            return os.path.getsize(self.file_for(name)) / (1024 * 1024)
-        except OSError:
-            return 0.0
-
-    # ── cell selection ───────────────────────────────────────────────────────
-    def set_primary(self, name: str | None) -> None:
+    # ── selection ───────────────────────────────────────────────────────────
+    def set_primary(self, name: Optional[str]) -> None:
         if not name:
             self.primary_name = None
             self.df_prim = self.report_prim = None
             self._recompute_range()
-            self._notify()
+            return
+        entry = library.get(name)
+        if entry is None:
+            self.primary_name = None
+            self.df_prim = self.report_prim = None
             return
         self.primary_name = name
-        df, rpt, _ = load_and_analyze(self.file_for(name))
+        df, rpt, _ = load_and_analyze(entry.path)
         self.df_prim, self.report_prim = df, rpt
         self._recompute_range()
-        self._notify()
 
-    def set_secondary(self, name: str | None) -> None:
+    def set_secondary(self, name: Optional[str]) -> None:
         if not name or name == self.primary_name:
             self.secondary_name = None
             self.df_sec = self.report_sec = None
             self._recompute_range()
-            self._notify()
+            return
+        entry = library.get(name)
+        if entry is None:
+            self.secondary_name = None
+            self.df_sec = self.report_sec = None
             return
         self.secondary_name = name
-        df, rpt, _ = load_and_analyze(self.file_for(name))
+        df, rpt, _ = load_and_analyze(entry.path)
         self.df_sec, self.report_sec = df, rpt
         self._recompute_range()
-        self._notify()
 
     def _recompute_range(self) -> None:
         rp, rs = self.report_prim, self.report_sec
@@ -127,12 +83,10 @@ class AppState:
         lo = max(lo, self.cycle_min)
         hi = min(hi, self.cycle_max)
         self.cycle_start, self.cycle_end = lo, hi
-        self._notify()
 
-    # ── filtered views ───────────────────────────────────────────────────────
+    # ── filtered views ──────────────────────────────────────────────────────
     @property
     def rp(self):
-        """Filtered primary report dataframe (Cycle no in range)."""
         if self.report_prim is None or self.report_prim.empty:
             return None
         rp = self.report_prim
@@ -140,7 +94,6 @@ class AppState:
 
     @property
     def dp(self):
-        """Filtered primary raw dataframe."""
         if self.df_prim is None:
             return None
         dp = self.df_prim
@@ -171,5 +124,4 @@ class AppState:
         return self.report_prim is not None and not self.report_prim.empty
 
 
-# Global singleton
-state = AppState()
+state = AnalysisState()

@@ -1,15 +1,19 @@
-# Ignore data files
-*.ndax
-*.xlsx
-*.csv
-
-# Ignore output directories
-Graphs/
-__pycache__/
-
-# System files
-.DS_Store
-Thumbs.db
 
 # Cache directories
+# Ignore data files
+# Ignore output directories
+# System files
+*.csv
+*.ndax
+*.pyc
+*.pyo
+*.tmp
+*.xlsx
+.DS_Store
 .diskcache/
+Graphs/
+Thumbs.db
+__pycache__/
+cache/
+library/catalog.json
+library/ndax/

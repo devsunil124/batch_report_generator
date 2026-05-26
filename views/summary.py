@@ -1,19 +1,20 @@
-"""Summary view: headline metrics, protocol phases, cell metadata."""
+"""Summary sub-view: headline metrics, protocol phases, peak preview."""
+from __future__ import annotations
 import os
 import pandas as pd
 from nicegui import ui
 
 from state import state
-import theme
 import charts
 
 
 def _meta_for(folder: str, cell_name: str) -> tuple[str, str, str]:
-    """Return (started_date, config, notes)."""
     started = "—"
     try:
         if state.df_prim is not None and 'Timestamp' in state.df_prim.columns:
-            started = state.df_prim['Timestamp'].min().strftime("%Y-%m-%d")
+            ts = state.df_prim['Timestamp'].min()
+            if ts is not None:
+                started = ts.strftime("%Y-%m-%d")
     except Exception:
         pass
 
@@ -26,17 +27,14 @@ def _meta_for(folder: str, cell_name: str) -> tuple[str, str, str]:
             if not row.empty:
                 _cfg = str(row.iloc[0].get('Configuration & Changes', '')).strip()
                 _nts = str(row.iloc[0].get('Experimental Notes / Reason to Stop', '')).strip()
-                if _cfg and _cfg.lower() != 'nan':
-                    cfg = _cfg
-                if _nts and _nts.lower() != 'nan':
-                    nts = _nts
+                if _cfg and _cfg.lower() != 'nan': cfg = _cfg
+                if _nts and _nts.lower() != 'nan': nts = _nts
         except Exception:
             pass
     return started, cfg, nts
 
 
 def _peak(rp, col: str):
-    """(value, cycle_no) for the row of max `col` filtered by Chg Capacity > 0.0001."""
     clean = rp[rp['Chg Capacity (Ah)'] > 0.0001][col].dropna()
     if clean.empty:
         return None, None
@@ -45,95 +43,100 @@ def _peak(rp, col: str):
 
 
 def render() -> None:
-    if not state.ready():
-        ui.html('<div class="term-empty">// SELECT A CELL FROM THE LEFT RAIL TO BEGIN //</div>')
-        return
-
     rp = state.rp
     if rp is None or rp.empty:
-        ui.html('<div class="term-empty">// NO DATA IN SELECTED CYCLE RANGE //</div>')
+        ui.html('<div class="zn-empty"><h3>No data in selected range</h3>'
+                '<p>Adjust the cycle range above.</p></div>')
         return
 
-    started, cfg, nts = _meta_for(state.folder_path, state.primary_name)
+    theme = state.theme
+    started, cfg, nts = _meta_for("library/ndax", state.primary_name or "")
+
     max_dcap, cyc_dcap = _peak(rp, 'DChg capacity (Ah)')
     max_ceff, cyc_ceff = _peak(rp, 'Coulombic Efficiency (%)')
     max_eeff, cyc_eeff = _peak(rp, 'Energy Efficiency (%)')
     avg_i = float(rp['Current (mA)'].mean()) if 'Current (mA)' in rp else 0.0
     n_cyc = len(rp)
 
-    # ── Cell identity strip ──────────────────────────────────────────────────
-    with ui.element('div').classes('term-panel').style('margin: 14px;'):
-        with ui.element('div').classes('term-panel-header'):
-            ui.html(
-                f'<span>CELL/{state.primary_name}</span>'
-                f'<span class="meta">STARTED {started} '
-                + (f'· COMPARE {state.secondary_name}' if state.secondary_name else '')
-                + '</span>'
-            )
-        with ui.element('div').classes('term-panel-body'):
-            theme.kv([
-                ("Configuration", cfg),
-                ("Notes / Status", nts),
-                ("Cycle Range",  f"{state.cycle_start} → {state.cycle_end}   ({n_cyc} cycles in view)"),
-            ])
-
     # ── Metric strip ─────────────────────────────────────────────────────────
-    with ui.element('div').classes('term-panel').style('margin: 0 14px 14px 14px;'):
-        with ui.element('div').classes('term-panel-header'):
-            ui.html('<span>HEADLINE METRICS</span><span class="meta">RANGE FILTERED</span>')
-        with ui.element('div').style(
-            'display:grid; grid-template-columns: repeat(5, 1fr); gap: 1px; '
-            'background: #1a1a1a; border-top: 1px solid #1a1a1a;'
-        ):
-            theme.metric("Cycles", f"{n_cyc}", "in range")
-            theme.metric(
-                "Peak Discharge", f"{max_dcap:.4f} Ah" if max_dcap is not None else "—",
-                f"@ cycle {cyc_dcap}" if cyc_dcap is not None else "—", tone="amber",
-            )
-            theme.metric(
-                "Max Coulombic Eff", f"{max_ceff:.2f}%" if max_ceff is not None else "—",
-                f"@ cycle {cyc_ceff}" if cyc_ceff is not None else "—", tone="green",
-            )
-            theme.metric(
-                "Max Energy Eff", f"{max_eeff:.2f}%" if max_eeff is not None else "—",
-                f"@ cycle {cyc_eeff}" if cyc_eeff is not None else "—", tone="cyan",
-            )
-            theme.metric("Avg Chg Current", f"{avg_i:.1f} mA", "primary cell")
-
-    # ── Peak preview + protocol phases ───────────────────────────────────────
     with ui.element('div').style(
-        'display:grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 0 14px 14px 14px;'
+        'display:grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 20px;'
     ):
-        # Peak cycle V-Q preview
-        with ui.element('div').classes('term-panel'):
-            with ui.element('div').classes('term-panel-header'):
-                ui.html(
-                    f'<span>PEAK CYCLE PREVIEW</span>'
-                    f'<span class="meta">{("C" + str(cyc_dcap).zfill(3)) if cyc_dcap is not None else "—"}</span>'
+        _metric("Cycles in range", f"{n_cyc}", "")
+        _metric(
+            "Peak discharge",
+            f"{max_dcap:.4f} Ah" if max_dcap is not None else "—",
+            f"@ cycle {cyc_dcap}" if cyc_dcap is not None else "—",
+            tone="accent",
+        )
+        _metric(
+            "Max coulombic eff",
+            f"{max_ceff:.2f}%" if max_ceff is not None else "—",
+            f"@ cycle {cyc_ceff}" if cyc_ceff is not None else "—",
+            tone="success",
+        )
+        _metric(
+            "Max energy eff",
+            f"{max_eeff:.2f}%" if max_eeff is not None else "—",
+            f"@ cycle {cyc_eeff}" if cyc_eeff is not None else "—",
+            tone="accent",
+        )
+        _metric("Avg chg current", f"{avg_i:.1f} mA", "primary cell")
+
+    # ── Two-column: peak preview + cell info ─────────────────────────────────
+    with ui.element('div').style(
+        'display:grid; grid-template-columns: 1.2fr 1fr; gap: 16px; margin-bottom: 20px;'
+    ):
+        # Peak preview
+        with ui.element('div').classes('zn-card'):
+            ui.html('<div class="zn-card-header"><div class="zn-h2">Peak cycle preview</div>'
+                    f'<span class="zn-chip accent">C{(cyc_dcap or 0):03d}</span></div>')
+            if cyc_dcap is not None and state.dp is not None:
+                fig = charts.mini_preview(
+                    charts.vc_traces(
+                        state.dp, [cyc_dcap], "turbo",
+                        single_color=charts.primary_color(theme),
+                    ),
+                    theme, height=200,
                 )
-            with ui.element('div').classes('term-panel-body').style('padding: 6px;'):
-                if cyc_dcap is not None and state.dp is not None:
-                    fig = charts.mini_preview(
-                        charts.vc_traces(state.dp, [cyc_dcap], "turbo", single_color=charts.AMBER),
-                        height=200,
-                    )
-                    ui.plotly(fig).classes('w-full').style('height: 200px;')
-                else:
-                    ui.html('<div class="term-empty" style="padding:30px;">// NO PEAK DATA //</div>')
+                ui.plotly(fig).classes('w-full').style('height: 200px;')
+            else:
+                ui.html('<div class="zn-empty"><p>No peak data.</p></div>')
 
-        # Test protocol phases
-        with ui.element('div').classes('term-panel'):
-            with ui.element('div').classes('term-panel-header'):
-                ui.html('<span>TEST PROTOCOL PHASES</span><span class="meta">CHG/DCHG CURRENT BANDS</span>')
-            with ui.element('div').classes('term-panel-body').style('padding: 0; max-height: 220px; overflow: auto;'):
-                _render_phases_table(rp)
+        # Cell info
+        with ui.element('div').classes('zn-card'):
+            ui.html('<div class="zn-card-header"><div class="zn-h2">Cell info</div></div>')
+            ui.html(
+                f'<div class="zn-kv">'
+                f'<div class="k">Started</div><div class="v">{started}</div>'
+                f'<div class="k">Configuration</div><div class="v">{cfg}</div>'
+                f'<div class="k">Notes / status</div><div class="v">{nts}</div>'
+                f'<div class="k">Cycle range</div><div class="v">{state.cycle_start} → {state.cycle_end}</div>'
+                f'</div>'
+            )
+
+    # ── Protocol phases ──────────────────────────────────────────────────────
+    with ui.element('div').classes('zn-card'):
+        ui.html('<div class="zn-card-header"><div class="zn-h2">Test protocol phases</div>'
+                '<span class="zn-chip">Constant-current bands</span></div>')
+        _render_phases(rp)
 
 
-def _render_phases_table(rp) -> None:
-    """Detect constant-current phases by sequential Cycle no and render a tight table."""
+def _metric(lbl: str, val: str, sub: str, tone: str = "") -> None:
+    val_cls = f"val {tone}".strip()
+    ui.html(
+        f'<div class="zn-metric">'
+        f'<div class="lbl">{lbl}</div>'
+        f'<div class="{val_cls}">{val}</div>'
+        f'<div class="sub">{sub}</div>'
+        f'</div>'
+    )
+
+
+def _render_phases(rp) -> None:
     df_s = rp.sort_values('Cycle no').reset_index(drop=True)
     if df_s.empty:
-        ui.html('<div class="term-empty">// NO PHASES //</div>')
+        ui.html('<div class="zn-empty"><p>No phases.</p></div>')
         return
 
     phases = []
@@ -164,11 +167,11 @@ def _render_phases_table(rp) -> None:
         for p in phases
     )
     ui.html(
-        '<table class="term-table">'
+        '<div style="overflow-x:auto;"><table class="zn-table">'
         '<thead><tr>'
-        '<th>#</th><th class="num">CHG (mA)</th><th class="num">DCHG (mA)</th>'
-        '<th class="num">START</th><th class="num">END</th><th class="num">COUNT</th>'
+        '<th>#</th><th class="num">Chg (mA)</th><th class="num">DChg (mA)</th>'
+        '<th class="num">Start</th><th class="num">End</th><th class="num">Count</th>'
         '</tr></thead>'
         f'<tbody>{rows}</tbody>'
-        '</table>'
+        '</table></div>'
     )

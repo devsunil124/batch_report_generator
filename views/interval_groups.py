@@ -1,4 +1,5 @@
-"""Interval Groups view: 5th/10th/25th overlay with separate palettes."""
+"""Interval Groups sub-view: every 5/10/25 cycle overlay."""
+from __future__ import annotations
 from nicegui import ui
 
 from state import state
@@ -6,22 +7,20 @@ import charts
 
 
 def render() -> None:
-    if not state.ready():
-        ui.html('<div class="term-empty">// SELECT A CELL FROM THE LEFT RAIL TO BEGIN //</div>')
-        return
-
     cycles_list = state.cycles_list
     if not cycles_list:
-        ui.html('<div class="term-empty">// NO CYCLES IN SELECTED RANGE //</div>')
+        ui.html('<div class="zn-empty"><h3>No cycles in selected range</h3></div>')
         return
 
     flags = {'5': True, '10': True, '25': True}
-
-    container = ui.element('div').classes('term-panel').style('margin: 14px;')
+    plot_holder: ui.element | None = None
 
     def rebuild():
-        body.clear()
-        with body:
+        if plot_holder is None:
+            return
+        plot_holder.clear()
+        theme = state.theme
+        with plot_holder:
             traces = []
             if flags['5']:
                 c5 = [c for i, c in enumerate(cycles_list) if i % 5 == 0]
@@ -38,30 +37,26 @@ def render() -> None:
                 for tr in charts.vc_traces(state.dp, c25, "Greens"):
                     tr.name = tr.name + " /25"
                     traces.append(tr)
-            fig = charts.vc_figure(
-                traces, title=f"{state.primary_name} — multi-interval overlay",
-                height=580,
-            )
-            ui.plotly(fig).classes('w-full').style('height: 580px;')
+            fig = charts.vc_figure(traces, theme,
+                                   title=f"{state.primary_name} — multi-interval overlay",
+                                   height=590)
+            ui.plotly(fig).classes('w-full').style('height: 590px;')
 
-    with container:
-        with ui.element('div').classes('term-panel-header'):
-            ui.html(
-                f'<span>INTERVAL OVERLAY · {state.primary_name}</span>'
-                f'<span class="meta">BLUES=/5 · WARM=/10 · GREENS=/25</span>'
-            )
-        with ui.element('div').classes('term-panel-body'):
-            with ui.row().classes('items-center').style('gap: 22px; margin-bottom: 12px;'):
-                def make_toggle(key: str, label: str):
-                    cb = ui.checkbox(label, value=flags[key]).props('dense dark')
-                    def _on(e):
-                        flags[key] = bool(e.value)
-                        rebuild()
-                    cb.on_value_change(_on)
-                make_toggle('5',  'EVERY 5TH')
-                make_toggle('10', 'EVERY 10TH')
-                make_toggle('25', 'EVERY 25TH')
-                ui.html(f'<span class="term-tag">{len(cycles_list)} CYCLES</span>')
+    with ui.element('div').classes('zn-card'):
+        ui.html('<div class="zn-card-header"><div class="zn-h2">Interval overlay</div>'
+                '<span class="zn-chip">Blues = /5 · warm = /10 · greens = /25</span></div>')
 
-            body = ui.element('div')
-            rebuild()
+        with ui.element('div').classes('zn-toolbar').style('margin-bottom: 14px;'):
+            def make_cb(key: str, lbl: str):
+                cb = ui.checkbox(lbl, value=flags[key]).props('dense dark')
+                def _on(e):
+                    flags[key] = bool(e.value)
+                    rebuild()
+                cb.on_value_change(_on)
+            make_cb('5',  'Every 5th')
+            make_cb('10', 'Every 10th')
+            make_cb('25', 'Every 25th')
+            ui.html(f'<span class="zn-chip">{len(cycles_list)} cycles</span>')
+
+        plot_holder = ui.element('div')
+        rebuild()

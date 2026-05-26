@@ -1,297 +1,120 @@
-"""ZnBr Terminal — battery analytics dashboard (NiceGUI, Bloomberg aesthetic)."""
+"""ZnBr Analytics — entrypoint, top nav, page router."""
 from __future__ import annotations
-
-from datetime import datetime
 from nicegui import ui, app
 
 import theme
 from state import state
-from views import summary, trends, cycle_curves, interval_groups, full_screen, raw_data
+from views import home, analysis
 
 
-# ─── Route registry ───────────────────────────────────────────────────────────
-ROUTES = [
-    ('summary',   'F1', 'Summary',         summary.render),
-    ('trends',    'F2', 'Trends',          trends.render),
-    ('curves',    'F3', 'Cycle Curves',    cycle_curves.render),
-    ('intervals', 'F4', 'Intervals',       interval_groups.render),
-    ('full',      'F5', 'Full Screen',     full_screen.render),
-    ('raw',       'F6', 'Raw Data',        raw_data.render),
-]
-ROUTE_INDEX = {r[0]: r for r in ROUTES}
+APP_NAME = "ZnBr Analytics"
+APP_VER = "v2.0"
 
 
-# ─── Mutable shell handles (set up in main page) ──────────────────────────────
-class Shell:
-    current_route: str = 'summary'
-    content_container: ui.element | None = None
-    nav_items: dict = {}
-    titlebar_cell: ui.html | None = None
-    titlebar_time: ui.html | None = None
-    status_msg: ui.html | None = None
+def _theme_toggle_button() -> None:
+    """Sun/moon icon button — flips data-theme attribute and mirrors to python."""
+    ui.html(
+        '<button class="zn-icon-btn" id="zn-theme-btn" title="Toggle theme" '
+        'aria-label="Toggle theme" onclick="'
+        'var next = znToggleTheme();'
+        'this.innerHTML = next === \'dark\' ? \'☀\' : \'☾\';'
+        'fetch(\'/_zn_theme/\' + next, {method: \'POST\'});'
+        '">☾</button>'
+    )
 
 
-shell = Shell()
-
-
-# ─── Rendering ────────────────────────────────────────────────────────────────
-def render_titlebar() -> None:
-    with ui.element('div').classes('term-titlebar'):
-        ui.html('<span class="brand">ZNBR/TERM</span>'
-                '<span class="sep">│</span>'
-                '<span class="field">v1.0</span>'
-                '<span class="sep">│</span>')
-        shell.titlebar_cell = ui.html(_cell_summary_html())
-        ui.element('div').style('flex: 1;')   # spacer
-        shell.titlebar_time = ui.html(_time_html())
-        ui.html('<span class="sep">│</span><span class="blink">●</span><span class="field">LIVE</span>')
-
-
-def render_statusbar() -> None:
-    with ui.element('div').classes('term-statusbar'):
-        for key, fk, label, _ in ROUTES:
-            ui.html(f'<span class="field">{fk}:</span>'
-                    f'<span style="color:#c8c8c8;">{label.upper()}</span>')
-        ui.element('div').style('flex: 1;')
-        shell.status_msg = ui.html(_status_html())
-
-
-def render_sidebar() -> None:
-    with ui.element('div').classes('term-nav'):
-        ui.html('<div class="term-nav-section">VIEW</div>')
-        for key, fk, label, _ in ROUTES:
-            cls = 'term-nav-item' + (' active' if key == shell.current_route else '')
-            item = ui.element('div').classes(cls)
-            with item:
-                ui.html(f'<span class="key">{fk}</span>'
-                        f'<span>{label}</span>')
-            item.on('click', lambda _, k=key: navigate(k))
-            shell.nav_items[key] = item
-
-        ui.html('<div class="term-nav-section">CELL MGR</div>')
-        with ui.element('div').style('padding: 4px 14px 8px 14px;'):
-            _render_cell_manager()
-
-
-def _render_cell_manager() -> None:
-    # Folder path
-    ui.html('<div style="color:#5a5a5a; font-size:10px; letter-spacing:0.14em; '
-            'text-transform:uppercase; margin-bottom:4px;">NDAX FOLDER</div>')
-    folder_input = ui.input(value=state.folder_path).props(
-        'dense outlined dark autogrow'
-    ).style('width:100%; margin-bottom: 6px;')
-
-    def apply_folder():
-        new_path = (folder_input.value or "").strip()
-        if new_path != state.folder_path:
-            state.set_folder(new_path)
-            redraw_sidebar_and_content()
-
-    folder_input.on('blur', lambda _: apply_folder())
-    folder_input.on('keydown.enter', lambda _: apply_folder())
-
-    with ui.row().style('gap: 4px; margin-bottom: 10px;'):
-        def browse():
-            try:
-                import tkinter as tk
-                from tkinter import filedialog
-                root = tk.Tk()
-                root.attributes('-topmost', True)
-                root.withdraw()
-                selected = filedialog.askdirectory(
-                    master=root,
-                    initialdir=state.folder_path if state.folder_valid() else None,
-                )
-                root.destroy()
-                if selected:
-                    folder_input.set_value(selected)
-                    state.set_folder(selected)
-                    redraw_sidebar_and_content()
-            except Exception as e:
-                ui.notify(f"Browse failed: {e}", type='negative')
-
-        ui.button("BROWSE", on_click=browse).props('flat dense').style('flex:1;')
-        ui.button("LOAD", on_click=lambda: apply_folder()).props('flat dense').classes('term-btn-primary').style('flex:1;')
-
-    cells = state.list_cells()
-    if not cells:
-        ui.html('<div style="color:#5a5a5a; font-size:11px; padding:4px 0;">'
-                '// NO .NDAX FILES FOUND //</div>')
-        return
-
-    ui.html('<div style="color:#5a5a5a; font-size:10px; letter-spacing:0.14em; '
-            'text-transform:uppercase; margin:6px 0 4px;">PRIMARY CELL</div>')
-    prim = ui.select(
-        cells, value=state.primary_name if state.primary_name in cells else None,
-        with_input=True,
-    ).props('dense outlined dark').style('width: 100%;')
-    def on_prim(e):
-        state.set_primary(e.value)
-        redraw_sidebar_and_content()
-    prim.on_value_change(on_prim)
-
-    if state.primary_name:
-        sz = state.file_size_mb(state.primary_name)
-        ui.html(f'<div style="color:#5a5a5a; font-size:10px; margin-top:2px;">'
-                f'{sz:.1f} MB</div>')
-
-    sec_opts = ['— None —'] + [c for c in cells if c != state.primary_name]
-    sec_val = state.secondary_name if state.secondary_name else '— None —'
-    ui.html('<div style="color:#5a5a5a; font-size:10px; letter-spacing:0.14em; '
-            'text-transform:uppercase; margin:10px 0 4px;">COMPARE CELL</div>')
-    sec = ui.select(sec_opts, value=sec_val, with_input=True).props(
-        'dense outlined dark'
-    ).style('width: 100%;')
-    def on_sec(e):
-        val = None if (not e.value or e.value == '— None —') else e.value
-        state.set_secondary(val)
-        redraw_sidebar_and_content()
-    sec.on_value_change(on_sec)
-
-    # Cycle range (only when data loaded)
-    if state.ready():
-        ui.html('<div style="color:#5a5a5a; font-size:10px; letter-spacing:0.14em; '
-                'text-transform:uppercase; margin:10px 0 4px;">CYCLE RANGE</div>')
-        if state.cycle_min == state.cycle_max:
-            ui.html(f'<div style="color:#c8c8c8; font-size:11px;">'
-                    f'SINGLE CYCLE: {state.cycle_min}</div>')
-        else:
-            with ui.row().style('gap: 4px;'):
-                c_start = ui.number(
-                    label='START', value=state.cycle_start,
-                    min=state.cycle_min, max=state.cycle_max, step=1,
-                ).props('dense outlined dark').style('flex:1;')
-                c_end = ui.number(
-                    label='END', value=state.cycle_end,
-                    min=state.cycle_min, max=state.cycle_max, step=1,
-                ).props('dense outlined dark').style('flex:1;')
-
-                def apply_range(_=None):
-                    try:
-                        s = int(c_start.value); e = int(c_end.value)
-                    except (TypeError, ValueError):
-                        return
-                    if s == state.cycle_start and e == state.cycle_end:
-                        return
-                    state.set_range(s, e)
-                    redraw_content()
-
-                c_start.on('blur', apply_range)
-                c_end.on('blur', apply_range)
-                c_start.on('keydown.enter', apply_range)
-                c_end.on('keydown.enter', apply_range)
-
-
-def _cell_summary_html() -> str:
-    if not state.ready():
-        return ('<span class="field">CELL:</span>'
-                '<span class="val">—</span>')
-    base = (f'<span class="field">CELL:</span>'
-            f'<span class="val">{state.primary_name}</span>')
-    if state.secondary_name:
-        base += (f'<span class="sep">│</span>'
-                 f'<span class="field">VS:</span>'
-                 f'<span class="val" style="color:#00d9ff;">{state.secondary_name}</span>')
-    base += (f'<span class="sep">│</span>'
-             f'<span class="field">CYC:</span>'
-             f'<span class="val">{state.cycle_start}–{state.cycle_end}</span>')
-    return base
-
-
-def _time_html() -> str:
-    return (f'<span class="field">SYS:</span>'
-            f'<span class="val">{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</span>')
-
-
-def _status_html() -> str:
-    if not state.folder_valid():
-        return '<span class="chip">NO FOLDER</span>'
-    if not state.ready():
-        return f'<span class="chip">READY · {state.folder_path}</span>'
-    n_cyc = len(state.rp) if state.rp is not None else 0
-    return (f'<span class="chip">LOADED · {n_cyc} CYCLES</span>'
-            f'<span class="field">{state.folder_path}</span>')
-
-
-def navigate(key: str) -> None:
-    if key not in ROUTE_INDEX or key == shell.current_route:
-        return
-    shell.current_route = key
-    for k, item in shell.nav_items.items():
-        if k == key:
-            item.classes(add='active')
-        else:
-            item.classes(remove='active')
-    redraw_content()
-
-
-def redraw_content() -> None:
-    if shell.content_container is None:
-        return
-    shell.content_container.clear()
-    with shell.content_container:
-        ROUTE_INDEX[shell.current_route][3]()
-    if shell.titlebar_cell is not None:
-        shell.titlebar_cell.set_content(_cell_summary_html())
-    if shell.status_msg is not None:
-        shell.status_msg.set_content(_status_html())
-
-
-def redraw_sidebar_and_content() -> None:
-    # Re-render the entire sidebar (cell manager state changed)
-    if _sidebar_container is None:
-        return
-    _sidebar_container.clear()
-    with _sidebar_container:
-        render_sidebar()
-    redraw_content()
-
-
-# Need to hold a reference to the side container so we can refresh it
-_sidebar_container: ui.element | None = None
-
-
-@ui.page('/')
-def index() -> None:
-    global _sidebar_container
-    theme.apply_theme()
-
-    # Top bar
-    render_titlebar()
-
-    # Main flex row: sidebar + content
-    with ui.row().style(
-        'flex: 1; gap: 0; margin: 0; padding: 0; width: 100%; '
-        'flex-wrap: nowrap; min-height: 0;'
-    ).classes('items-stretch'):
-        _sidebar_container = ui.element('div')
-        with _sidebar_container:
-            render_sidebar()
-
-        shell.content_container = ui.element('div').style(
-            'flex: 1; overflow-y: auto; min-width: 0; background: #050505;'
+def _top_nav(active: str) -> None:
+    with ui.element('nav').classes('zn-nav'):
+        # Brand
+        ui.html(
+            f'<a href="/" class="zn-brand">'
+            f'  <span class="logo">Zn</span>'
+            f'  <span class="name">{APP_NAME}</span>'
+            f'  <span class="ver">{APP_VER}</span>'
+            f'</a>'
         )
-        with shell.content_container:
-            ROUTE_INDEX[shell.current_route][3]()
+        # Tabs
+        nav_links = [('home', '/', 'Home'), ('analysis', '/analysis', 'Analysis')]
+        tabs_html = ''.join(
+            f'<a href="{href}" class="zn-nav-tab{" active" if key == active else ""}">{label}</a>'
+            for key, href, label in nav_links
+        )
+        ui.html(f'<div class="zn-nav-tabs">{tabs_html}</div>')
 
-    # Status bar
-    render_statusbar()
+        # Right side actions
+        with ui.element('div').classes('zn-nav-actions'):
+            _theme_toggle_button()
 
-    # Live clock
-    def tick():
-        if shell.titlebar_time is not None:
-            shell.titlebar_time.set_content(_time_html())
-    ui.timer(1.0, tick)
+
+def _footer() -> None:
+    ui.html(
+        '<footer class="zn-footer">'
+        f'<span>{APP_NAME} {APP_VER}</span> · '
+        '<span>Files stored locally in <code style="background:var(--surface-2); padding:1px 6px; border-radius:4px;">./library/</code></span>'
+        '</footer>'
+    )
+
+
+# ─── Server-side theme mirror ────────────────────────────────────────────────
+# The browser is the source of truth; we POST changes to /_zn_theme/<name> so
+# Python knows which theme is active when generating Plotly figures.
+@app.post('/_zn_theme/{name}')
+def _set_theme(name: str) -> dict:
+    if name in ('light', 'dark'):
+        state.theme = name
+    return {'ok': True, 'theme': state.theme}
+
+
+def _theme_sync_script() -> None:
+    """On page load: POST the current theme to the server (so Plotly figures
+    use the right palette) and set the toggle button glyph (sun/moon)."""
+    ui.add_body_html(
+        '<script>'
+        'window.addEventListener("DOMContentLoaded", function(){'
+        '  var t = znCurrentTheme();'
+        '  fetch("/_zn_theme/" + t, {method: "POST"});'
+        '  var b = document.getElementById("zn-theme-btn");'
+        '  if (b) b.innerHTML = t === "dark" ? "\\u2600" : "\\u263E";'
+        '});'
+        '</script>'
+    )
+
+
+# ─── Pages ────────────────────────────────────────────────────────────────────
+@ui.page('/')
+def page_home() -> None:
+    theme.apply_theme()
+    _theme_sync_script()
+    _top_nav(active='home')
+
+    def navigate_to_analysis(cell_name: str) -> None:
+        ui.navigate.to(f'/analysis?cell={cell_name}')
+
+    home.render(navigate_to_analysis)
+    _footer()
+
+
+@ui.page('/analysis')
+def page_analysis(cell: str | None = None) -> None:
+    theme.apply_theme()
+    _theme_sync_script()
+    _top_nav(active='analysis')
+
+    def go_home() -> None:
+        ui.navigate.to('/')
+
+    analysis.render(initial_cell=cell, navigate_home=go_home)
+    _footer()
 
 
 # ─── Bootstrap ────────────────────────────────────────────────────────────────
 if __name__ in {'__main__', '__mp_main__'}:
     ui.run(
-        title="ZnBr/Term",
+        title=APP_NAME,
         favicon="🔋",
-        dark=True,
+        dark=None,           # follow system / data-theme; we manage it ourselves
         port=8765,
         reload=False,
         show=True,
-        storage_secret='znbr-terminal-local',
+        storage_secret='znbr-analytics-local',
     )
